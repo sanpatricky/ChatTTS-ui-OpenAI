@@ -4,6 +4,7 @@ import re
 import sys
 
 from click import prompt
+from starlette.responses import StreamingResponse
 
 if sys.platform == "darwin":
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -74,7 +75,7 @@ elif device_str == 'cpu':
     device = torch.device("cpu")
 
 chat.load(source="local" if not os.path.exists(MODEL_DIR + "/DVAE_full.pt") else 'custom', custom_path=ROOT_DIR,
-          device=device, compile=True if os.getenv('compile', 'true').lower() != 'false' else False)
+          device=device, compile=True if os.getenv('compile', 'true').lower() != 'false' else False, force_redownload=True)
 
 # 配置日志
 # 禁用 Werkzeug 默认的日志处理器
@@ -140,20 +141,23 @@ def index():
 
 audio_queue = []
 
+
+
 @app.route('/v1/audio/speech', methods=['GET', 'POST'])
 def generate_speech():
-
+    #设置音色
     voice_mapping = {
-        "alloy": "4099",
-        "echo": "2222",
-        "fable": "6653",
-        "onyx": "7869",
-        "nova": "5099",
-        "shimmer": "4099"
+        "alloy": "1",
+        "echo": "2",
+        "fable": "3",
+        "onyx": "4",
+        "nova": "5",
+        "shimmer": "6"
     }
     # 原始字符串
     text = request.json['input']
     voice = request.json['voice']
+    #请求的音色值也可以是数字
     voice = voice_mapping.get(voice, voice)
 
     # 默认值
@@ -207,12 +211,9 @@ def generate_speech():
         else:
             voice = 2222
         torch.manual_seed(voice)
-        # std, mean = chat.sample_random_speaker
         rand_spk = chat.sample_random_speaker()
-        # rand_spk = torch.randn(768) * std + mean
         # 保存音色
         torch.save(rand_spk, f"{SPEAKER_DIR}/{voice}.pt")
-        # utils.save_speaker(voice,rand_spk)
 
     audio_files = []
 
@@ -259,38 +260,39 @@ def generate_speech():
 
     new_text = retext
 
-    new_text_list = [new_text[i:i + merge_size] for i in range(0, len(new_text), merge_size)]
+    text_list = [new_text[i:i + merge_size] for i in range(0, len(new_text), merge_size)]
     filename_list = []
 
     audio_time = 0
     inter_time = 0
 
 
-    print(f'{new_text=}')
-    wavs = chat.infer(
-        new_text,
-        # use_decoder=False,
-        stream=False,
-        # stream=True if is_stream == 1 else False,
-        skip_refine_text=skip_refine,
-        do_text_normalization=False,
-        do_homophone_replacement=True,
-        params_refine_text=params_refine_text,
-        params_infer_code=params_infer_code
+    print(f'{text_list=}')
+    for i, te in enumerate(text_list):
+        print(f'{te=}')
+        wavs = chat.infer(
+            te,
+            # use_decoder=False,
+            #stream=True if is_stream == 1 else False,
+            skip_refine_text=skip_refine,
+            do_text_normalization=False,
+            do_homophone_replacement=True,
+            params_refine_text=params_refine_text,
+            params_infer_code=params_infer_code
 
-    )
+        )
 
-    end_time = time.time()
-    inference_time = end_time - start_time
-    inference_time_rounded = round(inference_time, 2)
-    inter_time += inference_time_rounded
-    print(f"推理时长: {inference_time_rounded} 秒")
+        end_time = time.time()
+        inference_time = end_time - start_time
+        inference_time_rounded = round(inference_time, 2)
+        inter_time += inference_time_rounded
+        print(f"推理时长: {inference_time_rounded} 秒")
 
-    for j, w in enumerate(wavs):
-        filename = datetime.datetime.now().strftime(
-            '%H%M%S_') + f"use{inference_time_rounded}s-seed{voice}-te{temperature}-tp{top_p}-tk{top_k}-textlen{len(text)}-{str(random())[2:7]}" + f"-{j}.wav"
-        filename_list.append(filename)
-        torchaudio.save(WAVS_DIR + '/' + filename, torch.from_numpy(w).unsqueeze(0), 24000)
+        for j, w in enumerate(wavs):
+            filename = datetime.datetime.now().strftime(
+                '%H%M%S_') + f"use{inference_time_rounded}s-seed{voice}-te{temperature}-tp{top_p}-tk{top_k}-textlen{len(text)}-{str(random())[2:7]}" + f"-{i}-{j}.wav"
+            filename_list.append(filename)
+            torchaudio.save(WAVS_DIR + '/' + filename, torch.from_numpy(w).unsqueeze(0), 24000)
 
     txt_tmp = "\n".join([f"file '{WAVS_DIR}/{it}'" for it in filename_list])
     txt_name = f'{time.time()}.txt'
@@ -309,7 +311,6 @@ def generate_speech():
                        creationflags=0 if sys.platform != 'win32' else subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         return jsonify({"code": 1, "msg": str(e)})
-
     audio_files.append({
         "filename": WAVS_DIR + '/' + outname,
         "url": f"http://{request.host}/static/wavs/{outname}",
@@ -324,6 +325,7 @@ def generate_speech():
         pass
 
     fstream = io.open(WAVS_DIR + '/' + outname, 'rb')
+
     return fstream
 
 
